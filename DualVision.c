@@ -13,8 +13,6 @@
 #define SDL_AUDIO_BUFFER_SIZE 1024
 #define MAX_AUDIO_FRAME_SIZE 192000
 
-#define FIX_INPUT 1
-
 typedef struct PacketQueue
 {
     AVPacketList *first_pkt, *last_pkt;
@@ -25,9 +23,7 @@ typedef struct PacketQueue
 } PacketQueue;
 
 PacketQueue audioq;
-
 int quit = 0;
-
 AVFrame wanted_frame;
 
 void packet_queue_init (PacketQueue *q)
@@ -68,7 +64,7 @@ int packet_queue_put(PacketQueue *q, AVPacket *pkt)
     q->size += pkt1->pkt.size;
     SDL_CondSignal(q->cond);
 
-    SDL_UnlockMutex(q->mutex);
+    SDL_UnlockMutex(q->mutex); // sound play there
 
     return 0;
 }
@@ -77,6 +73,9 @@ int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block)
 {
     AVPacketList *pkt1;
     int ret;
+
+
+    SDL_LockMutex(q->mutex); // ? dont have it in huatian
 
     for(;;)
     {
@@ -136,7 +135,6 @@ int audio_decode_frame(AVCodecContext *aCodecCtx, uint8_t *audio_buf, int buf_si
     {
         if(pkt.data)
             av_free_packet(&pkt);
-
 
         if(quit)
         {
@@ -485,7 +483,7 @@ int main(int argc, char *argv[])
     while (av_read_frame(pFormatCtx, &packet) >= 0)
     {
 
-    	if(packet.stream_index==videoStream) {
+    	if(packet.stream_index == videoStream) {
     	      // Decode video frame
     	      avcodec_decode_video2(pCodecCtx, pFrame, &frameFinished, &packet);
 
@@ -517,7 +515,9 @@ int main(int argc, char *argv[])
     		av_free_packet(&packet);
     	      }
     	} else if (packet.stream_index == audioStream)
+    	{
             packet_queue_put(&audioq, &packet);
+    	}
         else
             av_free_packet(&packet);
 
@@ -537,7 +537,17 @@ int main(int argc, char *argv[])
     }
 
     getchar();
-   // avformat_close_input(&pFormatCtx);
+	// avformat_close_input(&pFormatCtx);
+
+	// Free the YUV frame
+	//av_frame_free(&pFrame);
+
+	// Close the codecs
+	avcodec_close(pCodecCtx);
+	avcodec_close(aCodecCtx);
+
+	// Close the video file
+	avformat_close_input(&pFormatCtx);
 
     return 0;
 }
