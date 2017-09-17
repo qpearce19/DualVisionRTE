@@ -26,6 +26,7 @@ PacketQueue audioq;
 int quit = 0;
 AVFrame wanted_frame;
 
+// Initialise
 void packet_queue_init (PacketQueue *q)
 {
     memset(q, 0, sizeof(PacketQueue));
@@ -33,6 +34,7 @@ void packet_queue_init (PacketQueue *q)
     q->cond = SDL_CreateCond();
 }
 
+// Put audio packet to the audio queue.
 int packet_queue_put(PacketQueue *q, AVPacket *pkt)
 {
 
@@ -69,13 +71,14 @@ int packet_queue_put(PacketQueue *q, AVPacket *pkt)
     return 0;
 }
 
+// Get audio packet from the audio queue.
 int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block)
 {
     AVPacketList *pkt1;
     int ret;
 
 
-    SDL_LockMutex(q->mutex); // ? dont have it in huatian
+    SDL_LockMutex(q->mutex); // ? Don't have it in huatian
 
     for(;;)
     {
@@ -259,16 +262,16 @@ void audio_callback(void *userdata, Uint8 *stream, int len)
 
     //printf("audio_callback len=%d \n", len);
 
-    //向设备发送长度为len的数据
+    // Send the data to len to the divece
     while(len > 0)
     {
-        //缓冲区中无数据
+        // There is no data in the buffer
         if(audio_buf_index >= audio_buf_size)
         {
-            //从packet中解码数据
+            // Decode data from packet
             audio_size = audio_decode_frame(aCodecCtx, audio_buf, audio_buf_size);
             //printf("audio_decode_frame finish  audio_size=%d \n", audio_size);
-            if(audio_size < 0) //没有解码到数据或者出错，填充0
+            if(audio_size < 0) // No decoding data or error, fill buffer with 0
             {
                 audio_buf_size = 1024;
                 memset(audio_buf, 0, audio_buf_size);
@@ -329,10 +332,7 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Usage: test <file> \n");
         exit(1);
     }
-
     strcpy(filename, argv[1]);
-
-
 
 
     av_register_all();
@@ -343,37 +343,105 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
-    // 读取文件头，将格式相关信息存放在AVFormatContext结构体中
+    // 读Take the file header, the format-related information stored in the AVFormatContext structure
     if(avformat_open_input(&pFormatCtx, filename, NULL, NULL) != 0)
         return -1;
-    // 检测文件的流信息
+    // 检测File flow information
     if(avformat_find_stream_info(pFormatCtx, NULL) < 0)
         return -1;
 
-    // 在控制台输出文件信息
+    // Output the file information at the console
     av_dump_format(pFormatCtx, 0, filename, 0);
 
 
 
+    // Find audio stream
+    audioStream = -1;
+    for(i = 0; i < pFormatCtx->nb_streams; i++)
+		if(pFormatCtx->streams[i]->codec->codec_type == AVMEDIA_TYPE_AUDIO && audioStream < 0)
+			audioStream = i;
+    if(videoStream == -1)
+    		return -1; // Didn't find a video stream
+
+    // Find video stream
     videoStream=-1;
-    for(i=0; i<pFormatCtx->nb_streams; i++) {
-        if(pFormatCtx->streams[i]->codec->codec_type==AVMEDIA_TYPE_VIDEO &&
-           videoStream < 0) {
-          videoStream=i;
-        }
-	if(videoStream==-1)
-		return -1; // Didn't find a video stream
+        for(i=0; i<pFormatCtx->nb_streams; i++) {
+            if(pFormatCtx->streams[i]->codec->codec_type==AVMEDIA_TYPE_VIDEO && videoStream < 0)
+              videoStream = i;
+    	if(videoStream == -1)
+    		return -1; // Didn't find a video stream
+
 
 
 	// Get a pointer to the codec context for the video stream
-	  pCodecCtx=pFormatCtx->streams[videoStream]->codec;
+    aCodecCtx = pFormatCtx->streams[audioStream]->codec;
+	pCodecCtx=pFormatCtx->streams[videoStream]->codec;
+
+
+	// Find the decoder for the audio stream
+	aCodec = avcodec_find_decoder(aCodecCtx->codec_id);
+	if(!aCodec)
+	{
+		fprintf(stderr, "Unsupported codec ! \n");
+		return -1;
+	}
 
 	// Find the decoder for the video stream
-	pCodec=avcodec_find_decoder(pCodecCtx->codec_id);
-	if(pCodec==NULL) {
-	  fprintf(stderr, "Unsupported codec!\n");
-	  return -1; // Codec not found
+	pCodec = avcodec_find_decoder(pCodecCtx->codec_id);
+	if(!pCodec)
+	{
+		fprintf(stderr, "Unsupported codec!\n");
+		return -1;
 	}
+
+
+
+
+	wanted_spec.freq = aCodecCtx->sample_rate;
+	wanted_spec.format = AUDIO_S16SYS;
+	wanted_spec.channels = aCodecCtx->channels;
+	wanted_spec.silence = 0;
+	wanted_spec.samples = SDL_AUDIO_BUFFER_SIZE;
+	wanted_spec.callback = audio_callback;
+	wanted_spec.userdata = aCodecCtx;
+
+	printf("codecCtx sample_rate = %d \n", aCodecCtx->sample_rate);
+	printf("codecCtx channels = %d \n", aCodecCtx->channels);
+	printf("codecCtx sample_fmt = %d \n", aCodecCtx->sample_fmt);
+	printf("AUDIO_S16SYS = %d \n", AUDIO_S16SYS);
+	printf("\n");
+
+	/**
+	 * SDL_OpenAudio function through wanted_spec to open the audio device, the success of return to zero, the actual hardware parameters to the spec point to the structure.
+	 * If spec is NULL, audio data will be passed through the callback function to ensure that it will automatically be converted to hardware audio format.
+	 * The audio device starts playing mute, and when callback becomes available, it starts playing by calling SDL_PauseAudio (0).
+	 * Since audio diver may modify the size of the audio cache request, you should apply for any mixing buffers after you turn on the audio device. */
+	if(SDL_OpenAudio(&wanted_spec, &spec) < 0)
+	{
+		fprintf(stderr, "SDL_OpenAudio: %s \n", SDL_GetError());
+		return -1;
+	}
+
+	printf("spec freq = %d \n", spec.freq);
+	printf("spec format = %d \n", spec.format);
+	printf("spec channels = %d \n", spec.channels);
+	printf("spec samples = %d \n", spec.samples);
+	printf("spec silence = %d \n", spec.silence);
+	printf("spec padding = %d \n", spec.padding);
+	printf("spec size = %d \n", spec.size);
+	printf("\n");
+
+	printf("AV_SAMPLE_FMT_S16 = %d \n", AV_SAMPLE_FMT_S16);
+	wanted_frame.format = AV_SAMPLE_FMT_S16;
+	wanted_frame.sample_rate = spec.freq;
+	wanted_frame.channel_layout = av_get_default_channel_layout(spec.channels);
+	wanted_frame.channels = spec.channels;
+
+	avcodec_open2(aCodecCtx, aCodec, NULL);
+
+	packet_queue_init(&audioq);
+	SDL_PauseAudio(0);
+
 
 	// Open codec
 	if(avcodec_open2(pCodecCtx, pCodec, NULL)<0)
@@ -381,6 +449,8 @@ int main(int argc, char *argv[])
 
 	// Allocate video frame
 	pFrame=av_frame_alloc();
+
+
 
 
 #ifndef __DARWIN__
@@ -412,71 +482,6 @@ int main(int argc, char *argv[])
 			   NULL
 			   );
 
-
-
-
-
-
-    for(i = 0; i < pFormatCtx->nb_streams; i++)
-    {
-        if(pFormatCtx->streams[i]->codec->codec_type == AVMEDIA_TYPE_AUDIO)
-            audioStream = i;
-    }
-
-    aCodecCtx = pFormatCtx->streams[audioStream]->codec;
-
-    aCodec = avcodec_find_decoder(aCodecCtx->codec_id);
-    if(!aCodec)
-    {
-        fprintf(stderr, "Unsupported codec ! \n");
-        return -1;
-    }
-
-    wanted_spec.freq = aCodecCtx->sample_rate;
-    wanted_spec.format = AUDIO_S16SYS;
-    wanted_spec.channels = aCodecCtx->channels;
-    wanted_spec.silence = 0;
-    wanted_spec.samples = SDL_AUDIO_BUFFER_SIZE;
-    wanted_spec.callback = audio_callback;
-    wanted_spec.userdata = aCodecCtx;
-
-    printf("codecCtx sample_rate = %d \n", aCodecCtx->sample_rate);
-    printf("codecCtx channels = %d \n", aCodecCtx->channels);
-    printf("codecCtx sample_fmt = %d \n", aCodecCtx->sample_fmt);
-    printf("AUDIO_S16SYS = %d \n", AUDIO_S16SYS);
-    printf("\n");
-
-    /**
-     *SDL_OpenAudio 函数通过wanted_spec来打开音频设备，成功返回零，将实际的硬件参数传递给spec的指向的结构体。
-     *如果spec为NULL，audio data将通过callback函数，保证将自动转换成硬件音频格式。
-     *
-     *音频设备刚开始播放静音，当callback变得可用时，通过调用SDL_PauseAudio(0)来开始播放。
-     *由于audio diver 可能修改音频缓存的请求大小，所以你应该申请任何的混合缓存（mixing buffers），在你打开音频设备之后。*/
-    if(SDL_OpenAudio(&wanted_spec, &spec) < 0)
-    {
-        fprintf(stderr, "SDL_OpenAudio: %s \n", SDL_GetError());
-        return -1;
-    }
-
-    printf("spec freq = %d \n", spec.freq);
-    printf("spec format = %d \n", spec.format);
-    printf("spec channels = %d \n", spec.channels);
-    printf("spec samples = %d \n", spec.samples);
-    printf("spec silence = %d \n", spec.silence);
-    printf("spec padding = %d \n", spec.padding);
-    printf("spec size = %d \n", spec.size);
-    printf("\n");
-
-    printf("AV_SAMPLE_FMT_S16 = %d \n", AV_SAMPLE_FMT_S16);
-    wanted_frame.format = AV_SAMPLE_FMT_S16;
-    wanted_frame.sample_rate = spec.freq;
-    wanted_frame.channel_layout = av_get_default_channel_layout(spec.channels);
-    wanted_frame.channels = spec.channels;
-
-    avcodec_open2(aCodecCtx, aCodec, NULL);
-
-    packet_queue_init(&audioq);
-    SDL_PauseAudio(0);
 
     // Read frames and save first five frames to disk
     i=0;
